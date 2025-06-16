@@ -1,5 +1,6 @@
-const { Client } = require('@notionhq/client');
-const { Octokit } = require('@octokit/rest');
+// sync-script.js
+import { Client } from '@notionhq/client';
+import { Octokit } from '@octokit/rest';
 
 // Initialize clients
 const notion = new Client({

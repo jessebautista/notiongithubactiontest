@@ -23,6 +23,7 @@ jobs:
     - name: Install dependencies
       run: |
         npm init -y
+        npm pkg set type="module"
         npm install @notionhq/client @octokit/rest
         
     - name: Sync Notion pages to GitHub Issues

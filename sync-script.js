@@ -15,6 +15,59 @@ const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const [GITHUB_OWNER, GITHUB_REPO] = process.env.GITHUB_REPO.split('/');
 
+async function debugConnection() {
+  console.log('=== DEBUGGING CONNECTION ===');
+  console.log('Database ID:', NOTION_DATABASE_ID);
+  console.log('Database ID length:', NOTION_DATABASE_ID?.length);
+  console.log('GitHub Owner:', GITHUB_OWNER);
+  console.log('GitHub Repo:', GITHUB_REPO);
+  
+  // Test basic connection
+  try {
+    const me = await notion.users.me();
+    console.log('✅ Notion connection successful');
+    console.log('Bot name:', me.name);
+  } catch (error) {
+    console.log('❌ Notion connection failed:', error.message);
+    return;
+  }
+  
+  // Test database access
+  try {
+    const database = await notion.databases.retrieve({
+      database_id: NOTION_DATABASE_ID,
+    });
+    console.log('✅ Database access successful');
+    console.log('Database title:', database.title?.[0]?.plain_text);
+    console.log('Database properties:', Object.keys(database.properties));
+  } catch (error) {
+    console.log('❌ Database access failed:', error.message);
+    console.log('Full error:', error);
+    return;
+  }
+  
+  // Test query
+  try {
+    const response = await notion.databases.query({
+      database_id: NOTION_DATABASE_ID,
+    });
+    console.log('✅ Database query successful');
+    console.log('Total pages found:', response.results.length);
+    
+    response.results.forEach((page, index) => {
+      const title = page.properties.Name?.title?.[0]?.plain_text || 'Untitled';
+      const status = page.properties.Status?.select?.name || 'No status';
+      const githubCreated = page.properties['GitHub Issue Created']?.checkbox || false;
+      console.log(`Page ${index + 1}: "${title}" - Status: ${status} - GitHub Created: ${githubCreated}`);
+    });
+    
+  } catch (error) {
+    console.log('❌ Database query failed:', error.message);
+  }
+  
+  console.log('=== END DEBUG ===');
+}
+
 async function analyzeDescriptionWithAI(description, title) {
   if (!ANTHROPIC_API_KEY) {
     console.log('No Anthropic API key found, using basic analysis');
@@ -212,6 +265,9 @@ function analyzeDescription(description) {
 
 async function main() {
   console.log('Starting Notion to GitHub sync...');
+  
+  // Add debug first
+  await debugConnection();
   
   const pages = await getNotionPages();
   console.log(`Found ${pages.length} pages with "In Progress" status`);

@@ -1,36 +1,54 @@
-# .github/workflows/notion-sync.yml
-name: Notion to GitHub Issues Sync
+name: Notion to GitHub Sync
 
 on:
+  # Run every 15 minutes
   schedule:
-    # Run every 5 minutes to check for status changes
-    - cron: '*/5 * * * *'
-  workflow_dispatch: # Allow manual triggering
+    - cron: '*/15 * * * *'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+  
+  # Run on push to main branch (for testing)
+  push:
+    branches: [ main ]
 
 jobs:
-  sync-notion-to-github:
+  sync:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+    
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        
+        cache: 'npm'
+    
     - name: Install dependencies
+      run: npm install @notionhq/client @octokit/rest
+    
+    - name: Debug environment variables
       run: |
-        npm init -y
-        npm pkg set type="module"
-        npm install @notionhq/client @octokit/rest
-        
-    - name: Sync Notion pages to GitHub Issues
+        echo "Checking environment variables..."
+        echo "NOTION_DATABASE_ID length: ${#NOTION_DATABASE_ID}"
+        echo "NOTION_TOKEN set: $([[ -n "$NOTION_TOKEN" ]] && echo "YES" || echo "NO")"
+        echo "GITHUB_TOKEN set: $([[ -n "$GITHUB_TOKEN" ]] && echo "YES" || echo "NO")"
+        echo "GITHUB_REPO: $GITHUB_REPO"
+        echo "ANTHROPIC_API_KEY set: $([[ -n "$ANTHROPIC_API_KEY" ]] && echo "YES" || echo "NO")"
       env:
-        NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_REPO: ${{ github.repository }}
+        GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    
+    - name: Run sync script
       run: node sync-script.js
+      env:
+        NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

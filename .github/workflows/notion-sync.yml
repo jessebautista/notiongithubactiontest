@@ -15,6 +15,7 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    environment: testdev # <--- ADD THIS LINE
     
     steps:
     - name: Checkout repository
@@ -39,6 +40,7 @@ jobs:
         echo "GITHUB_TOKEN set: $([[ -n "$GITHUB_TOKEN" ]] && echo "YES" || echo "NO")"
         echo "GITHUB_REPO: $GITHUB_REPO"
         echo "ANTHROPIC_API_KEY set: $([[ -n "$ANTHROPIC_API_KEY" ]] && echo "YES" || echo "NO")"
+      # The env block here is still correct for mapping secrets to environment variables within the step
       env:
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -48,6 +50,7 @@ jobs:
     
     - name: Run sync script
       run: node sync-script.js
+      # The env block here is also correct
       env:
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}

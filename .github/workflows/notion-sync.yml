@@ -38,14 +38,14 @@ jobs:
         echo "NOTION_DATABASE_ID length: ${#NOTION_DATABASE_ID}"
         echo "NOTION_TOKEN set: $([[ -n "$NOTION_TOKEN" ]] && echo "YES" || echo "NO")"
         echo "GITHUB_TOKEN set: $([[ -n "$GITHUB_TOKEN" ]] && echo "YES" || echo "NO")"
-        echo "GITHUB_REPO: $GITHUB_REPO"
+        echo "REPO_FULL_NAME: $REPO_FULL_NAME"
         echo "ANTHROPIC_API_KEY set: $([[ -n "$ANTHROPIC_API_KEY" ]] && echo "YES" || echo "NO")"
       # The env block here is still correct for mapping secrets to environment variables within the step
       env:
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+        REPO_FULL_NAME: ${{ secrets.REPO_FULL_NAME }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     
     - name: Run sync script
@@ -55,5 +55,5 @@ jobs:
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+        REPO_FULL_NAME: ${{ secrets.REPO_FULL_NAME }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

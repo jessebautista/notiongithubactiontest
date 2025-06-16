@@ -15,15 +15,21 @@ jobs:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event.name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
+    
+    # --- FIX 1: 'environment' should be here, at the job level ---
+    environment: testdev 
+    # ----------------------------------------------------------------
+    
     permissions:
       contents: read
       pull-requests: read
-      issues: write
+      issues: write # Keep this as 'write' for full functionality
       id-token: write
-      environment: testdev
+      # The 'environment: testdev' line that was here needs to be removed
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,10 +39,15 @@ jobs:
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@beta
+        
+        # --- FIX 2: 'env' should be at the same level as 'uses', not nested in 'with' ---
+        env: # <--- THIS BLOCK'S INDENTATION IS CRUCIAL
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} 
+        # ---------------------------------------------------------------------------------
+        
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          env: # <--- ADD THIS BLOCK
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # <--- Pass the secret as an environment variable
+          # The 'env' block and the ANTHROPIC_API_KEY inside it was here before, remove it.
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
           # model: "claude-opus-4-20250514"
           

@@ -13,14 +13,14 @@ const octokit = new Octokit({
 
 const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const [GITHUB_OWNER, GITHUB_REPO] = process.env.GITHUB_REPO.split('/');
+const [GITHUB_OWNER, REPO_FULL_NAME] = process.env.REPO_FULL_NAME.split('/');
 
 async function debugConnection() {
   console.log('=== DEBUGGING CONNECTION ===');
   console.log('Database ID:', NOTION_DATABASE_ID);
   console.log('Database ID length:', NOTION_DATABASE_ID?.length);
   console.log('GitHub Owner:', GITHUB_OWNER);
-  console.log('GitHub Repo:', GITHUB_REPO);
+  console.log('GitHub Repo:', REPO_FULL_NAME);
   
   // Test basic connection
   try {
@@ -226,7 +226,7 @@ async function createGitHubIssue(title, description) {
   try {
     const response = await octokit.rest.issues.create({
       owner: GITHUB_OWNER,
-      repo: GITHUB_REPO,
+      repo: REPO_FULL_NAME,
       title: title,
       body: description,
       labels: ['notion-sync', 'auto-generated']

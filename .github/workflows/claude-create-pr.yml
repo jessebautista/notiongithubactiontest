@@ -50,22 +50,30 @@ jobs:
           BRANCH_NAME="claude-fix-${{ github.event.inputs.source_issue_or_pr || github.run_id }}"
           git checkout -b "$BRANCH_NAME"
 
-          # Write the generated code to a file.
-          # You might need more sophisticated logic here to determine the file path
-          # and how to apply the code (e.g., create new file, patch existing).
-          # For a simple case, we'll write to a new file.
-          # Consider an input for `target_file_path` from claude.yml if known.
-
           CODE_FILE="claude_generated_code_${{ github.run_id }}.txt" # Unique name
-          echo "${{ github.event.inputs.generated_code }}" > "<span class="math-inline">CODE\_FILE"
-\# Example\: If Claude provides file path info, you'd parse it and write to that path
-\# echo "</span>{{ github.event.inputs.generated_code }}" > "path/to/my/file.js"
+          echo "${{ github.event.inputs.generated_code }}" > "$CODE_FILE"
 
           git add .
           git commit -m "${{ github.event.inputs.pr_title }}"
           git push origin "$BRANCH_NAME"
 
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate Labels for PR
+        id: generate-labels
+        run: |
+          LABELS="claude-auto-fix,review-needed" # Always include these
+          
+          SOURCE_TYPE="${{ github.event.inputs.source_event_type }}"
+          SOURCE_ID="${{ github.event.inputs.source_issue_or_pr }}"
+
+          if [ "$SOURCE_TYPE" == "issues" ] && [ -n "$SOURCE_ID" ]; then
+            LABELS="${LABELS},from-issue-${SOURCE_ID}"
+          elif [ "$SOURCE_TYPE" == "pull_request_review_comment" ] && [ -n "$SOURCE_ID" ]; then
+            LABELS="${LABELS},from-pr-review-${SOURCE_ID}"
+          fi
+          
+          echo "labels_csv=$LABELS" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
@@ -77,21 +85,29 @@ jobs:
           base: ${{ github.ref_name }} # Target the branch where this workflow was triggered
           head: ${{ steps.create-branch.outputs.branch_name }}
           add-paths: . # Add all unstaged files in the current directory (should be just the new code file)
-          labels: |
-            claude-auto-fix
-            ${{ github.event.inputs.source_event_type == 'issues' && format('from-issue-{0}', github.event.inputs.source_issue_or_pr) || '' }}
-            ${{ github.event.inputs.source_event_type == 'pull_request_review_comment' && format('from-pr-review-{0}', github.event.inputs.source_issue_or_pr) || '' }}
-            review-needed # Automatically add the 'review-needed' label
-          assignees: ${{ github.event.sender.login }} # Assign to the user who triggered Claude
+          # --- MODIFIED LABELS SECTION ---
+          labels: ${{ steps.generate-labels.outputs.labels_csv }}
+          # --- END MODIFIED LABELS SECTION ---
+          
+          # --- MODIFIED ASSIGNEES SECTION ---
+          # Use a variable or a fallback if github.event.sender.login isn't always valid
+          # You might want to assign to the original PR author, or skip if none.
+          # Here, we'll try to get the original PR author from the input 'source_issue_or_pr'
+          # This requires that claude.yml passes the original PR author's login,
+          # or you can fall back to the repo default.
+          # Let's adjust claude.yml to pass original_pr_author
+          assignees: | # Use multiline string for assignees
+            ${{ github.event.inputs.original_pr_author || github.actor }} # Fallback to workflow actor (the bot)
+          # --- END MODIFIED ASSIGNEES SECTION ---
 
       - name: Comment on Original Source (Optional)
         if: github.event.inputs.source_issue_or_pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_ID: ${{ github.event.inputs.source_issue_or_pr }}
-          SOURCE_TYPE: <span class="math-inline">\{\{ github\.event\.inputs\.source\_event\_type \}\}
-run\: \|
-PR\_URL\=</span>(gh pr list --head ${{ steps.create-branch.outputs.branch_name }} --json url -q .[0].url || echo "")
+          SOURCE_TYPE: ${{ github.event.inputs.source_event_type }}
+        run: |
+          PR_URL=$(gh pr list --head ${{ steps.create-branch.outputs.branch_name }} --json url -q .[0].url || echo "")
           if [ -n "$PR_URL" ]; then
             COMMENT_BODY="🤖 Claude AI has generated code and created a Pull Request: ${PR_URL}"
             if [ "$SOURCE_TYPE" == "issues" ]; then

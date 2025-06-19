@@ -17,14 +17,14 @@ jobs:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event.name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (
-        github.event_name == 'issues' && # When an issue event occurs
-        (github.event.action == 'opened' || github.event.action == 'assigned') && # And it's opened or assigned
+        github.event_name == 'issues' && 
+        (github.event.action == 'opened' || github.event.action == 'assigned') && 
         (
-          contains(github.event.issue.body, '@claude') || # EITHER it contains @claude in the body
-          contains(github.event.issue.title, '@claude') || # OR it contains @claude in the title
-          ( # OR it has both specific labels (if @claude in body/title is optional/fails)
+          contains(github.event.issue.body, '@claude') || 
+          contains(github.event.issue.title, '@claude') || 
+          ( 
             contains(github.event.issue.labels.*.name, 'auto-generated') &&
             contains(github.event.issue.labels.*.name, 'notion-sync')
           )
@@ -56,11 +56,11 @@ jobs:
         id: claude-generate-code
         uses: anthropics/claude-code-action@beta
         env:
-          ANTHROPIC_API_KEY: <span class="math-inline">\{\{ secrets\.ANTHROPIC\_API\_KEY \}\}
-with\:
-direct\_prompt\: \|
-Based on the following issue/comment\:
-"</span>{{ github.event.comment.body || github.event.issue.body || github.event.review.body }}"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          direct_prompt: |
+            Based on the following issue/comment:
+            '${{ github.event.comment.body || github.event.issue.body || github.event.review.body }}'
             Please generate the necessary code changes to address it.
             Provide the code in a single markdown code block.
             Focus on creating a small, self-contained change.
@@ -71,8 +71,9 @@ Based on the following issue/comment\:
         run: |
           RAW_RESPONSE="${{ steps.claude-generate-code.outputs.response }}"
           echo "Raw Claude Response:"
-          echo "<span class="math-inline">RAW\_RESPONSE"
-GENERATED\_CODE\=</span>(echo "$RAW_RESPONSE" | sed -n '/```/,/```/p' | grep -v '```')
+          echo "$RAW_RESPONSE"
+
+          GENERATED_CODE=$(echo "$RAW_RESPONSE" | sed -n '/```/,/```/p' | grep -v '```')
 
           if [ -z "$GENERATED_CODE" ]; then
             echo "::warning::No code block found in Claude's response. Exiting without creating PR."
@@ -114,15 +115,15 @@ GENERATED\_CODE\=</span>(echo "$RAW_RESPONSE" | sed -n '/```/,/```/p' | grep -v 
                 pr_title: `feat(ai): Auto-generated changes for ${issue_or_pr_id}`,
                 pr_body: `🤖 This Pull Request contains auto-generated code by Claude AI based on the prompt/issue ${issue_or_pr_id}.
 
----Generated Code---
-\`\`\`
-${generatedCode}
-\`\`\`
+            ---Generated Code---
+            \`\`\`
+            ${generatedCode}
+            \`\`\`
 
----Claude's Full Response---
-${process.env.RAW_CLAUDE_RESPONSE}
-`, # This is line 117. The comma needs to go *after* the backtick.
-                generated_code: generatedCode, # This would be line 118 or so depending on exact line wrapping
+            ---Claude's Full Response---
+            ${process.env.RAW_CLAUDE_RESPONSE}
+            `,
+                generated_code: generatedCode,
                 source_issue_or_pr: pr_number,
                 source_event_type: context.eventName,
                 original_pr_author: originalPrAuthor

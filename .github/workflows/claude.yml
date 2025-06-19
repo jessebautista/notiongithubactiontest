@@ -7,39 +7,38 @@ on:
   pull_request_review_comment:
     types: [created]
   issues:
-    types: [opened, assigned] # Issue 'opened' is the key one for notion-sync
+    types: [opened, assigned] # Issue 'opened' is key for notion-sync
   pull_request_review:
     types: [submitted]
-  workflow_dispatch: # Keep manual dispatch for testing
+  # workflow_dispatch is removed as it causes issues with the Claude action
 
 jobs:
-  claude-generate: # Renamed job for clarity
+  claude-generate: # Renamed job for clarity, consistent with earlier versions
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (
-        github.event_name == 'issues' && 
-        (github.event.action == 'opened' || github.event.action == 'assigned') && 
+      ( # Condition for issues opened or assigned, checking for @claude or specific labels
+        github.event_name == 'issues' &&
+        (github.event.action == 'opened' || github.event.action == 'assigned') &&
         (
-          contains(github.event.issue.body, '@claude') || 
-          contains(github.event.issue.title, '@claude') || 
-          ( 
+          contains(github.event.issue.body, '@claude') ||
+          contains(github.event.issue.title, '@claude') ||
+          (
             contains(github.event.issue.labels.*.name, 'auto-generated') &&
             contains(github.event.issue.labels.*.name, 'notion-sync')
           )
         )
-      ) ||
-      github.event_name == 'workflow_dispatch'
+      )
 
     runs-on: ubuntu-latest
 
-    environment: testdev
+    environment: testdev # Kept your environment
 
     permissions:
       contents: read
       pull-requests: read
-      issues: write
+      issues: write # Changed to write to allow PR creation, and comments if needed
       id-token: write
       actions: write
 
@@ -55,19 +54,16 @@ jobs:
       - name: Run Claude Code Generation
         id: claude-generate-code
         uses: anthropics/claude-code-action@beta
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          direct_prompt: |
-            Based on the following issue/comment:
-            '${{ github.event.comment.body || github.event.issue.body || github.event.review.body }}'
-            Please generate the necessary code changes to address it.
-            Provide the code in a single markdown code block.
-            Focus on creating a small, self-contained change.
-          allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test),Bash(npm run lint)"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }} # Changed env to with, as per colleague's version
+          # direct_prompt is removed, letting the action infer it from the event
+          # You can uncomment and customize allowed_tools if needed
+          # allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test),Bash(npm run lint)"
 
       - name: Extract Claude's Generated Code
         id: extract-code
+        # This step should only run if claude-generate-code actually ran and produced output
+        if: always() && steps.claude-generate-code.outputs.response != ''
         run: |
           RAW_RESPONSE="${{ steps.claude-generate-code.outputs.response }}"
           echo "Raw Claude Response:"
@@ -93,7 +89,13 @@ jobs:
             const fs = require('fs');
             const generatedCode = fs.readFileSync('generated_code.txt', 'utf8');
 
-            const pr_number = '${{ github.event.pull_request.number || github.event.issue.number }}';
+            // Determine source issue/PR number based on event type
+            let pr_number;
+            if (context.eventName === 'pull_request_review_comment' || context.eventName === 'pull_request_review') {
+              pr_number = context.payload.pull_request.number;
+            } else if (context.eventName === 'issue_comment' || context.eventName === 'issues') {
+              pr_number = context.payload.issue.number;
+            }
             const issue_or_pr_id = pr_number ? `#${pr_number}` : 'Unknown';
 
             let originalPrAuthor = '';
@@ -106,6 +108,7 @@ jobs:
                 originalPrAuthor = context.actor;
             }
 
+
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -115,14 +118,14 @@ jobs:
                 pr_title: `feat(ai): Auto-generated changes for ${issue_or_pr_id}`,
                 pr_body: `🤖 This Pull Request contains auto-generated code by Claude AI based on the prompt/issue ${issue_or_pr_id}.
 
-            ---Generated Code---
-            \`\`\`
-            ${generatedCode}
-            \`\`\`
+---Generated Code---
+\`\`\`
+${generatedCode}
+\`\`\`
 
-            ---Claude's Full Response---
-            ${process.env.RAW_CLAUDE_RESPONSE}
-            `,
+---Claude's Full Response---
+${process.env.RAW_CLAUDE_RESPONSE}
+`,
                 generated_code: generatedCode,
                 source_issue_or_pr: pr_number,
                 source_event_type: context.eventName,

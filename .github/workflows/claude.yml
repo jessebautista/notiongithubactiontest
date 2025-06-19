@@ -122,8 +122,6 @@ ${generatedCode}
 
 ---Claude's Full Response---
 ${process.env.RAW_CLAUDE_RESPONSE}
-
-`, # Adjusted body format for better Markdown rendering
                 generated_code: generatedCode,
                 source_issue_or_pr: pr_number,
                 source_event_type: context.eventName,

@@ -4,80 +4,129 @@ name: Claude Code Generator
 on:
   issues:
     types: [opened]
+  workflow_dispatch:
 
 jobs:
   claude-generate:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.issue.body, '@claude')
     runs-on: ubuntu-latest
-    environment: testdev
 
     permissions:
-      contents: read
-      pull-requests: read
+      contents: write
       issues: write
-      id-token: write
-      actions: write
-
-    outputs:
-      claude_response: ${{ steps.claude-generate-code.outputs.response }}
+      pull-requests: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Run Claude Code Generation
-        id: claude-generate-code
-        uses: anthropics/claude-code-action@beta
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-
-      - name: Extract Claude's Generated Code
-        id: extract-code
-        if: always() && steps.claude-generate-code.outputs.response != ''
+      - name: Debug Issue Content
+        if: github.event_name == 'issues'
         run: |
-          RAW_RESPONSE="${{ steps.claude-generate-code.outputs.response }}"
-          echo "Raw Claude Response:"
-          echo "$RAW_RESPONSE"
+          echo "Issue Title: ${{ github.event.issue.title }}"
+          echo "Issue Body: ${{ github.event.issue.body }}"
+          echo "Issue Number: ${{ github.event.issue.number }}"
 
-          GENERATED_CODE=$(echo "$RAW_RESPONSE" | sed -n '/```/,/```/p' | grep -v '```')
-
-          if [ -z "$GENERATED_CODE" ]; then
-            echo "::warning::No code block found in Claude's response. Exiting without creating PR."
-            echo "has_code=false" >> $GITHUB_OUTPUT
-          else
-            echo "::notice::Code block successfully extracted."
-            echo "$GENERATED_CODE" > generated_code.txt
-            echo "has_code=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Dispatch PR Creation Workflow
-        if: steps.extract-code.outputs.has_code == 'true'
-        uses: actions/github-script@v7
-        id: dispatch-pr-creation
-        with:
-          script: |
-            const fs = require('fs');
-            const generatedCode = fs.readFileSync('generated_code.txt', 'utf8');
-
-            const pr_number = context.payload.issue.number;
-            const issue_or_pr_id = `#${pr_number}`;
-            const originalPrAuthor = context.payload.issue.user.login;
-
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'claude-create-pr.yml',
-              ref: context.ref,
-              inputs: {
-                pr_title: `feat(ai): Auto-generated changes for ${issue_or_pr_id}`,
-                pr_body: `🤖 This Pull Request contains auto-generated code by Claude AI based on the prompt/issue ${issue_or_pr_id}.\n\n---Generated Code---\n\`\`\`\n${generatedCode}\n\`\`\`\n\n---Claude's Full Response---\n${process.env.RAW_CLAUDE_RESPONSE}`,
-                generated_code: generatedCode,
-                source_issue_or_pr: pr_number.toString(),
-                source_event_type: context.eventName,
-                original_pr_author: originalPrAuthor
-              }
-            });
-            console.log('Dispatched claude-create-pr.yml workflow.');
+      - name: Call Claude API
+        id: claude-call
         env:
-          RAW_CLAUDE_RESPONSE: ${{ steps.claude-generate-code.outputs.response }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Create the prompt
+          PROMPT="Based on this GitHub issue, generate code to address the request:
+
+          Title: ${{ github.event.issue.title }}
+          
+          Body: ${{ github.event.issue.body }}
+          
+          Please provide a specific code solution with file paths and implementation."
+
+          # Call Claude API
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -d '{
+              "model": "claude-3-sonnet-20240229",
+              "max_tokens": 4000,
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "'"$(echo "$PROMPT" | sed 's/"/\\"/g')"'"
+                }
+              ]
+            }')
+
+          echo "Claude Response:"
+          echo "$RESPONSE"
+          
+          # Extract the content
+          CONTENT=$(echo "$RESPONSE" | jq -r '.content[0].text // empty')
+          echo "Extracted Content:"
+          echo "$CONTENT"
+          
+          # Save to file
+          echo "$CONTENT" > claude_response.txt
+          echo "response_file=claude_response.txt" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.claude-call.outputs.response_file
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Create a new branch
+          BRANCH_NAME="claude-fix-issue-${{ github.event.issue.number }}"
+          git checkout -b "$BRANCH_NAME"
+          
+          # Read Claude's response
+          CLAUDE_RESPONSE=$(cat claude_response.txt)
+          
+          # Create a simple file with Claude's suggestion
+          echo "# Claude's Code Suggestion for Issue #${{ github.event.issue.number }}" > claude-suggestion.md
+          echo "" >> claude-suggestion.md
+          echo "## Original Issue" >> claude-suggestion.md
+          echo "**Title:** ${{ github.event.issue.title }}" >> claude-suggestion.md
+          echo "" >> claude-suggestion.md
+          echo "**Body:**" >> claude-suggestion.md
+          echo "${{ github.event.issue.body }}" >> claude-suggestion.md
+          echo "" >> claude-suggestion.md
+          echo "## Claude's Response" >> claude-suggestion.md
+          echo "" >> claude-suggestion.md
+          echo "$CLAUDE_RESPONSE" >> claude-suggestion.md
+          
+          # Configure git
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # Add and commit
+          git add claude-suggestion.md
+          git commit -m "feat: Claude's code suggestion for issue #${{ github.event.issue.number }}"
+          
+          # Push branch
+          git push origin "$BRANCH_NAME"
+          
+          # Create PR using GitHub CLI
+          gh pr create \
+            --title "🤖 Claude's solution for issue #${{ github.event.issue.number }}" \
+            --body "This PR contains Claude's suggested solution for issue #${{ github.event.issue.number }}.
+
+          ## Original Issue
+          ${{ github.event.issue.title }}
+
+          ## Claude's Analysis
+          Claude has analyzed the issue and provided the following solution:
+
+          \`\`\`
+          $CLAUDE_RESPONSE
+          \`\`\`
+
+          Please review and implement as needed." \
+            --base main \
+            --head "$BRANCH_NAME"
+
+      - name: Comment on Issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body "🤖 I've analyzed your issue and created a pull request with my suggested solution. Please check the PR for details!"

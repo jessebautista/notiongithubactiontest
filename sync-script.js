@@ -263,8 +263,6 @@ function analyzeDescription(description) {
   return [];
 }
 
-a// ... (rest of your sync-script.js code)
-
 async function main() {
   console.log('Starting Notion to GitHub sync...');
 

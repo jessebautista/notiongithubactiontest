@@ -1,4 +1,5 @@
-name: Claude Code
+# .github/workflows/claude.yml
+name: Claude Code Generator
 
 on:
   issue_comment:
@@ -11,61 +12,98 @@ on:
     types: [submitted]
 
 jobs:
-  claude:
+  claude-generate: # Renamed job for clarity
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event.name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
-    
-    # --- FIX 1: 'environment' should be here, at the job level ---
-    environment: testdev 
-    # ----------------------------------------------------------------
-    
+
+    environment: testdev
+
     permissions:
       contents: read
       pull-requests: read
-      issues: write # Keep this as 'write' for full functionality
+      issues: write
       id-token: write
-      # The 'environment: testdev' line that was here needs to be removed
-    
+      # Add workflow_dispatch permission to trigger the other workflow
+      actions: write # Needed for workflow_dispatch
+
+    outputs: # Define outputs if you need them later, e.g., for debugging
+      claude_response: ${{ steps.claude-generate-code.outputs.response }} # Expose Claude's full response
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code
-        id: claude
+      - name: Run Claude Code Generation
+        id: claude-generate-code # Changed ID for clarity
         uses: anthropics/claude-code-action@beta
-        
-        # --- FIX 2: 'env' should be at the same level as 'uses', not nested in 'with' ---
-        env: # <--- THIS BLOCK'S INDENTATION IS CRUCIAL
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} 
-        # ---------------------------------------------------------------------------------
-        
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # The 'env' block and the ANTHROPIC_API_KEY inside it was here before, remove it.
-          # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
-          # model: "claude-opus-4-20250514"
+          # Keep your existing Claude Code Action configuration here
+          # ...
+          # Example of an explicit prompt that might lead to code generation
+          direct_prompt: |
+            Based on the following issue/comment:
+            "${{ github.event.comment.body || github.event.issue.body || github.event.review.body }}"
+            Please generate the necessary code changes to address it.
+            Provide the code in a single markdown code block.
+            Focus on creating a small, self-contained change.
+          allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test),Bash(npm run lint)"
+
+      - name: Extract Claude's Generated Code
+        id: extract-code
+        run: |
+          RAW_RESPONSE="${{ steps.claude-generate-code.outputs.response }}"
+          echo "Raw Claude Response:"
+          echo "$RAW_RESPONSE"
+
+          # Attempt to extract code block. Adjust regex if Claude's output format varies.
+          # This regex captures content between ``` and ```.
+          GENERATED_CODE=$(echo "$RAW_RESPONSE" | sed -n '/```/,/```/p' | grep -v '```')
           
-          # Optional: Customize the trigger phrase (default: @claude)
-          # trigger_phrase: "/claude"
-          
-          # Optional: Trigger when specific user is assigned to an issue
-          # assignee_trigger: "claude-bot"
-          
-          # Optional: Allow Claude to run specific commands
-          # allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test:*),Bash(npm run lint:*)"
-          
-          # Optional: Add custom instructions for Claude to customize its behavior for your project
-          # custom_instructions: |
-          #   Follow our coding standards
-          #   Ensure all new code has tests
-          #   Use TypeScript for new files
-          
-          # Optional: Custom environment variables for Claude
-          # claude_env: |
-          #   NODE_ENV: test
+          # Check if code was extracted
+          if [ -z "$GENERATED_CODE" ]; then
+            echo "::warning::No code block found in Claude's response. Exiting without creating PR."
+            echo "has_code=false" >> $GITHUB_OUTPUT
+          else
+            echo "::notice::Code block successfully extracted."
+            echo "$GENERATED_CODE" > generated_code.txt # Save to file for multi-line output
+            echo "has_code=true" >> $GITHUB_OUTPUT
+            # For multiline output, save to a file and read it later if needed, or use a specific output format.
+            # For now, we'll rely on the file for the dispatch.
+          fi
+      
+      - name: Dispatch PR Creation Workflow
+        if: steps.extract-code.outputs.has_code == 'true' # Only dispatch if code was generated
+        uses: actions/github-script@v7
+        id: dispatch-pr-creation
+        with:
+          script: |
+            const fs = require('fs');
+            const generatedCode = fs.readFileSync('generated_code.txt', 'utf8');
+
+            const pr_number = '${{ github.event.pull_request.number || github.event.issue.number }}';
+            const issue_or_pr_id = pr_number ? `#${pr_number}` : 'Unknown';
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'claude-create-pr.yml', # The file name of your PR creation workflow
+              ref: context.ref, # Use the same branch/ref where the event occurred
+              inputs: {
+                pr_title: `feat(ai): Auto-generated changes for ${issue_or_pr_id}`,
+                pr_body: `🤖 This Pull Request contains auto-generated code by Claude AI based on the prompt/issue ${issue_or_pr_id}.\n\n---Generated Code---\n\`\`\`\n${generatedCode}\n\`\`\`\n\n---Claude's Full Response---\n${process.env.RAW_CLAUDE_RESPONSE}\n\n`,
+                generated_code: generatedCode,
+                source_issue_or_pr: pr_number,
+                source_event_type: context.eventName
+              }
+            });
+            console.log('Dispatched claude-create-pr.yml workflow.');
+        env:
+          RAW_CLAUDE_RESPONSE: ${{ steps.claude-generate-code.outputs.response }} # Pass full response as an env var

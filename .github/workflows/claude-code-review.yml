@@ -1,0 +1,329 @@
+name: Claude AI Code Review (Label Triggered)
+
+on:
+  pull_request_target:
+    types: [labeled, unlabeled, opened, reopened, synchronize] # Added opened, reopened, synchronize for initial trigger and re-reviews on code changes
+  workflow_dispatch: # Allows manual trigger for testing or specific cases
+    inputs:
+      pr_number:
+        description: 'Pull Request Number (optional, for manual trigger)'
+        required: false
+        type: number
+
+env:
+  MAX_REVIEW_ITERATIONS: 5 # Define this if not already defined globally or in secrets
+
+jobs:
+  claude-review:
+    # Only run if the 'review-needed' label is present AND 'deployed-ready' is NOT present
+    if: |
+      (github.event_name == 'pull_request_target' && contains(github.event.pull_request.labels.*.name, 'review-needed') && !contains(github.event.pull_request.labels.*.name, 'deployed-ready')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number) ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'opened' && contains(github.event.pull_request.labels.*.name, 'review-needed')) || # Initial trigger on PR open with label
+      (github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'review-needed')) # Re-trigger on new commits if label is present
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    outputs:
+      has-feedback: ${{ steps.process-feedback.outputs.has-feedback }}
+      feedback-count: ${{ steps.process-feedback.outputs.feedback-count }}
+      review-iteration: ${{ steps.get-iteration.outputs.iteration }}
+      pr-number: ${{ steps.get-iteration.outputs.pr-number }} # Pass PR number to subsequent jobs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # If running on pull_request_target from a fork, you might need:
+          # ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Get current review iteration
+        id: get-iteration
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number || github.event.inputs.pr_number }}"
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Error: Could not determine PR number."
+            exit 1
+          fi
+
+          # Count existing review issues for this PR
+          # Adjust label query to specifically target issues created by this workflow for this PR
+          ITERATION=$(gh issue list \
+            --label "code-review,pr-$PR_NUMBER" \
+            --state all \
+            --json number \
+            --jq 'length')
+
+          ITERATION=$((ITERATION + 1))
+
+          echo "iteration=$ITERATION" >> $GITHUB_OUTPUT
+          echo "pr-number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "Current review iteration: $ITERATION"
+
+          if [ $ITERATION -gt ${{ env.MAX_REVIEW_ITERATIONS }} ]; then # Use env var
+            echo "::warning::Maximum review iterations (${{ env.MAX_REVIEW_ITERATIONS }}) reached for PR #$PR_NUMBER"
+            echo "max-iterations-reached=true" >> $GITHUB_OUTPUT
+          else
+            echo "max-iterations-reached=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Claude Code Review
+        id: claude-review
+        if: steps.get-iteration.outputs.max-iterations-reached == 'false'
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            Please conduct a comprehensive code review of this pull request.
+            **Review Focus Areas:**
+            1. **Code Quality & Best Practices**
+               - Clean code principles
+               - Proper naming conventions
+               - Code organization and structure
+               - DRY (Don't Repeat Yourself) principle
+            2. **Potential Issues & Bugs**
+               - Logic errors
+               - Edge cases not handled
+               - Null/undefined checks
+               - Error handling
+            3. **Performance Considerations**
+               - Inefficient algorithms or operations
+               - Memory usage concerns
+               - Unnecessary re-renders or computations
+               - Bundle size impact
+            4. **Security Concerns**
+               - Input validation
+               - XSS vulnerabilities
+               - Authentication/authorization issues
+               - Data exposure risks
+            5. **Testing & Maintainability**
+               - Test coverage gaps
+               - Testability of code
+               - Documentation needs
+               - Future maintenance considerations
+            **Output Format:**
+            Please structure your feedback as follows:
+            ## 📋 Code Review Summary
+            ### ✅ Positive Aspects
+            [List what's done well]
+            ### 🔧 Issues Found
+            [For each issue, provide:]
+            - **File:** `path/to/file.ext:line`
+            - **Issue:** Brief description
+            - **Impact:** High/Medium/Low
+            - **Suggestion:** Specific improvement recommendation
+            ### 📈 Improvement Opportunities
+            [List non-critical improvements]
+            ### 🎯 Action Items
+            [Prioritized list of specific tasks to address]
+            **Important:** Only provide feedback if there are actual issues or meaningful improvements to suggest. If the code is already of high quality with no significant issues, respond with "✅ **Code Review Complete** - No significant issues found. The code meets quality standards."
+          allowed_tools: "Bash(npm run test),Bash(npm run lint),Bash(npm run typecheck),Bash(npm run build)"
+
+      - name: Process Claude feedback
+        id: process-feedback
+        if: steps.get-iteration.outputs.max-iterations-reached == 'false'
+        run: |
+          REVIEW_OUTPUT="${{ steps.claude-review.outputs.response }}"
+
+          if echo "$REVIEW_OUTPUT" | grep -q "Code Review Complete.*No significant issues found"; then
+            echo "has-feedback=false" >> $GITHUB_OUTPUT
+            echo "feedback-count=0" >> $GITHUB_OUTPUT
+            echo "✅ Code review complete - no issues found!"
+          else
+            ISSUE_COUNT=$(echo "$REVIEW_OUTPUT" | grep -c "^\*\*File:\*\*\|^- \*\*File:\*\*" || echo "0")
+
+            if [ $ISSUE_COUNT -gt 0 ]; then
+              echo "has-feedback=true" >> $GITHUB_OUTPUT
+              echo "feedback-count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
+              echo "Found $ISSUE_COUNT issues to address"
+            else
+              if echo "$REVIEW_OUTPUT" | grep -q "Improvement Opportunities\|Action Items"; then
+                echo "has-feedback=true" >> $GITHUB_OUTPUT
+                echo "feedback-count=1" >> $GITHUB_OUTPUT
+                echo "Found improvement opportunities"
+              else
+                echo "has-feedback=false" >> $GITHUB_OUTPUT
+                echo "feedback-count=0" >> $GITHUB_OUTPUT
+                echo "No actionable feedback found"
+              fi
+            fi
+          fi
+          echo "$REVIEW_OUTPUT" > /tmp/review_output.md
+
+      - name: Create improvement issue
+        if: steps.process-feedback.outputs.has-feedback == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.get-iteration.outputs.pr-number }}
+          ITERATION: ${{ steps.get-iteration.outputs.iteration }}
+          FEEDBACK_COUNT: ${{ steps.process-feedback.outputs.feedback-count }}
+          MAX_REVIEW_ITERATIONS: ${{ env.MAX_REVIEW_ITERATIONS }} # Pass to run environment
+        run: |
+          REVIEW_OUTPUT=$(cat /tmp/review_output.md)
+          ISSUE_TITLE="🔍 Code Review Feedback - PR #${PR_NUMBER} (Iteration ${ITERATION})"
+          ISSUE_BODY="## 🔍 Automated Code Review Feedback
+          **Pull Request:** #${PR_NUMBER}
+          **Review Iteration:** ${ITERATION}
+          **Issues Found:** ${FEEDBACK_COUNT}
+          **Timestamp:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          ---
+          ${REVIEW_OUTPUT}
+          ---
+          ## 🤖 Next Steps
+          This issue contains automated code review feedback. To continue the review process:
+          1. **Make the suggested changes in your PR.**
+          2. **Remove the 'code-review' label from this issue when you've addressed the feedback.** This will signal completion for *this specific review iteration*.
+          3. **Push new commits to your PR.** The workflow will automatically re-run as long as the PR still has the 'review-needed' label and does NOT have the 'deployed-ready' label.
+          
+          To signal that the PR is completely ready for deployment and no more automated reviews are needed:
+          * **Add the \`deployed-ready\` label to the Pull Request.** This will stop the review loop and trigger the final completion message.
+          ---
+          ## 📊 Review Progress
+          - **Current Iteration:** ${ITERATION}/${MAX_REVIEW_ITERATIONS}
+          - **Status:** 🔄 Awaiting fixes
+          ---
+          *This issue was automatically created by the Claude Code Review workflow.*"
+
+          ISSUE_NUMBER=$(gh issue create \
+            --title "$ISSUE_TITLE" \
+            --body "$ISSUE_BODY" \
+            --label "code-review,auto-fix,pr-${PR_NUMBER},iteration-${ITERATION}" \
+            --assignee "${{ github.event.pull_request.user.login || github.actor }}" \
+            --json number \
+            --jq '.number')
+          echo "Created issue #${ISSUE_NUMBER} with code review feedback"
+
+          PRIORITY_LABELS=""
+          if echo "$REVIEW_OUTPUT" | grep -qi "security\|vulnerability\|xss\|injection"; then
+            PRIORITY_LABELS="${PRIORITY_LABELS},security,high-priority"
+          fi
+          if echo "$REVIEW_OUTPUT" | grep -qi "bug\|error\|crash\|fail"; then
+            PRIORITY_LABELS="${PRIORITY_LABELS},bug,medium-priority"
+          fi
+          if echo "$REVIEW_OUTPUT" | grep -qi "performance\|slow\|optimization"; then
+            PRIORITY_LABELS="${PRIORITY_LABELS},performance"
+          fi
+
+          if [ -n "$PRIORITY_LABELS" ]; then
+            gh issue edit $ISSUE_NUMBER --add-label "${PRIORITY_LABELS#,}"
+          fi
+
+          gh pr comment $PR_NUMBER --body "🔍 **Code Review Feedback** (Iteration ${ITERATION})
+          Found ${FEEDBACK_COUNT} item(s) for improvement. Created issue #${ISSUE_NUMBER} with detailed feedback.
+          Please address the feedback. The review will automatically re-run on new commits as long as the PR has the \`review-needed\` label and does not have the \`deployed-ready\` label.
+          To mark as ready for deployment and stop reviews, add the \`deployed-ready\` label to this PR.
+          "
+
+  check-completion:
+    needs: claude-review
+    # Only run if no feedback was generated AND the 'review-needed' label is present AND 'deployed-ready' is NOT present
+    # This ensures it completes only when Claude says "no issues" AND we're still in review mode.
+    if: |
+      always() &&
+      needs.claude-review.outputs.has-feedback == 'false' &&
+      contains(github.event.pull_request.labels.*.name, 'review-needed') &&
+      !contains(github.event.pull_request.labels.*.name, 'deployed-ready')
+
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Mark review as complete (no issues found by Claude)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.claude-review.outputs.pr-number }}
+          ITERATION: ${{ needs.claude-review.outputs.review-iteration }}
+        run: |
+          echo "✅ Claude found no issues on iteration ${ITERATION} for PR #${PR_NUMBER}."
+          gh pr comment $PR_NUMBER --body "✅ **Claude Code Review Complete!** (Iteration ${ITERATION})
+          🎉 No significant issues found by Claude in this iteration.
+          If you are satisfied, please add the \`deployed-ready\` label to this PR to finalize the review process.
+          "
+
+  finalize-deployment-ready:
+    # This job triggers specifically when the 'deployed-ready' label is added
+    if: |
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'deployed-ready'
+
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Finalize review process
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment $PR_NUMBER --body "🚀 **PR Marked as 'Deployed Ready'!** 🎉
+          The automated code review process has been finalized for this Pull Request.
+          This PR is now considered ready for deployment based on the 'deployed-ready' label.
+          "
+          echo "Finalized review process for PR #${PR_NUMBER} marked as 'deployed-ready'."
+
+  trigger-recheck:
+    # This job runs when issues are closed (presumably fixed)
+    # The new trigger logic on pull_request_target/synchronize might make this less critical
+    # if the main workflow already re-runs on new commits.
+    # However, this can still be useful if the team's process involves closing the *issue*
+    # as the primary signal for re-evaluation.
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'closed' &&
+      contains(github.event.issue.labels.*.name, 'code-review') &&
+      !contains(github.event.issue.labels.*.name, 'iteration-complete') # Prevent re-triggering if issue just marks iteration complete
+
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read # Need to read PRs to get labels
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Extract PR number and check labels
+        id: check_pr_labels
+        run: |
+          ISSUE_LABELS="${{ join(github.event.issue.labels.*.name, ' ') }}"
+          PR_NUMBER=$(echo "$ISSUE_LABELS" | grep -o 'pr-[0-9]\+' | head -1 | cut -d'-' -f2)
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Could not extract PR number from issue labels. Exiting."
+            exit 0 # Exit gracefully if PR number not found
+          fi
+
+          PR_LABELS=$(gh pr view $PR_NUMBER --json labels --jq '(.labels[] | .name) | @tsv')
+          
+          if echo "$PR_LABELS" | grep -q "deployed-ready"; then
+            echo "PR #$PR_NUMBER has 'deployed-ready' label. Skipping re-review."
+            echo "should_retrigger=false" >> $GITHUB_OUTPUT
+          elif ! echo "$PR_LABELS" | grep -q "review-needed"; then
+            echo "PR #$PR_NUMBER does not have 'review-needed' label. Skipping re-review."
+            echo "should_retrigger=false" >> $GITHUB_OUTPUT
+          else
+            echo "PR #$PR_NUMBER is ready for re-review."
+            echo "should_retrigger=true" >> $GITHUB_OUTPUT
+            echo "pr_number_to_retrigger=$PR_NUMBER" >> $GITHUB_OUTPUT
+          fi
+      - name: Trigger re-review
+        if: steps.check_pr_labels.outputs.should_retrigger == 'true'
+        run: |
+          PR_NUMBER="${{ steps.check_pr_labels.outputs.pr_number_to_retrigger }}"
+          echo "Triggering re-review for PR #${PR_NUMBER}"
+          
+          # Use the workflow_dispatch trigger to re-run the main workflow
+          gh workflow run "Claude AI Code Review (Label Triggered)" \
+            --ref "${{ github.ref }}" \
+            --field pr_number="$PR_NUMBER"
+          
+          echo "✅ Re-review triggered for PR #${PR_NUMBER}"

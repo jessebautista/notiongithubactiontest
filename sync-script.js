@@ -263,57 +263,64 @@ function analyzeDescription(description) {
   return [];
 }
 
+a// ... (rest of your sync-script.js code)
+
 async function main() {
   console.log('Starting Notion to GitHub sync...');
-  
+
   // Add debug first
   await debugConnection();
-  
+
   const pages = await getNotionPages();
   console.log(`Found ${pages.length} pages with "In Progress" status`);
-  
+
   for (const page of pages) {
     try {
       // Get page title
       const title = page.properties.Name?.title?.[0]?.plain_text || 'Untitled';
-      
+
       // Get page description
       const description = await getPageContent(page.id);
-      
+
       if (!description) {
         console.log(`Skipping page "${title}" - no description found`);
         continue;
       }
-      
-      // Analyze description to extract tasks
-      const tasks = analyzeDescription(description);
-      
+
+      // Analyze description to extract tasks (this function is unused but kept for backward compatibility)
+      // const tasks = analyzeDescription(description); // This line can likely be removed or commented out
+
       // Use AI to analyze the description and create structured tasks
       const aiAnalysis = await analyzeDescriptionWithAI(description, title);
-      
+
       // Create the issue body with AI analysis
       let issueBody = aiAnalysis;
-      
+
+      // === ADD THIS LINE TO INCLUDE THE @CLAUDE TRIGGER ===
+      // Place it strategically so it feels natural, e.g., after the main analysis but before footers.
+      issueBody += `\n\n@claude please generate code to implement this feature request based on the analysis above.`;
+      // You can customize the prompt for Claude here.
+
       issueBody += `\n\n---\n*This issue was automatically created from Notion page: ${page.url}*\n`;
       issueBody += `*Analysis powered by Claude AI*`;
-      
+
       // Create GitHub issue
       const issue = await createGitHubIssue(title, issueBody);
-      
+
       if (issue) {
         console.log(`Created GitHub issue: ${issue.html_url}`);
-        
+
         // Update Notion page to mark as processed
         await updateNotionPage(page.id, issue.html_url);
-        
+
         console.log(`Updated Notion page "${title}"`);
       }
-      
+
     } catch (error) {
       console.error(`Error processing page:`, error);
     }
   }
-  
+
   console.log('Sync completed!');
 }
 
